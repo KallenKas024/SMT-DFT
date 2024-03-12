@@ -3,7 +3,7 @@ Dr.ShiMiTe is available now, go and buy it  now!
 # 项目目标
 实现一个能够实时(25ms间隔)获取麦克风输入并识别出所弹奏的和弦成分（由哪几个音组成 使用midi音值）的算法原型
 # 开发语言
-python
+python (屁眼通红)
 # 方案（暂定）
 1. 使用pyaudio库获取麦克风输入
 2. 提取一帧音频信号并降噪处理
