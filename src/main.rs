@@ -1,31 +1,27 @@
 use std::{
     process::exit,
     sync::{Arc, Mutex},
-    thread,
+    thread::sleep, time::Duration,
 };
 
 use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, Host, Stream, StreamConfig,
+    traits::{DeviceTrait, HostTrait, StreamTrait}, Device, Host, Stream, StreamConfig
 };
-use plotters::{
-    backend::BitMapBackend,
-    chart::ChartBuilder,
-    drawing::IntoDrawingArea,
-    element::Circle,
-    style::{Color, IntoFont as _, RED, WHITE},
-};
+
+
+use rodio::{buffer, source::{self, Buffered, SineWave}, Decoder, OutputStream, Sink};
 use rustfft::{algorithm::Radix4, num_complex::Complex, num_traits::Zero, Fft};
 
-const THRESHOLD: f32 = 0.1f32;
+//const THRESHOLD: f32 = 0f32;
 
 struct LocalDevice {
     device: Device,
+    host: Host
 }
 
 impl LocalDevice {
-    pub fn new(device: Device) -> LocalDevice {
-        LocalDevice { device }
+    pub fn new(device: Device, host: Host) -> LocalDevice {
+        LocalDevice { device, host }
     }
 
     pub fn get_raw(self) -> Device {
@@ -53,81 +49,67 @@ impl LocalDevice {
         };
         // 创建FFT实例
         let fft: Radix4<f32> =
-            Radix4::new(config.channels as usize, rustfft::FftDirection::Forward);
-        let processed_data: Arc<Mutex<Vec<Complex<f32>>>> =
-            Arc::new(Mutex::new(Vec::<Complex<f32>>::new()));
-        let processed_data_clone: Arc<Mutex<Vec<Complex<f32>>>> = Arc::clone(&processed_data);
+            Radix4::new(2, rustfft::FftDirection::Forward);
+
         // 创建音频输入流
-        let _stream: Stream = self
+        let stream: Stream = self
             .device
             .build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     // 将音频数据转换为复数
+                    //tracing::info!("{:?}", data);
                     let mut complex: Vec<Complex<f32>> = data
                         .iter()
                         .map(|&sample| Complex::new(sample, 0.0))
                         .collect();
-
+                    //tracing::info!("{:?}", complex);
                     // 执行FFT
                     fft.process(&mut complex);
+                    
 
-                    // 对频谱进行处理以降噪，通过设置阈值
+                    /*  对频谱进行处理以降噪，通过设置阈值
                     for freq in complex.iter_mut() {
                         if freq.norm() < THRESHOLD {
                             *freq = Complex::zero();
                         }
                     }
+                    */
 
                     // 执行逆FFT
-                    fft.process(&mut complex);
-                    tracing::error!("Processed audio data: {:?}", &complex);
-                    let mut processed_data: std::sync::MutexGuard<'_, Vec<Complex<f32>>> =
-                        processed_data.lock().unwrap();
-                    *processed_data = complex;
+                    let ifft: Radix4<f32> = Radix4::new(2, rustfft::FftDirection::Inverse);
+                    ifft.process(&mut complex);
+                    
+                    tracing::info!("Processed audio data");
+                            // 将处理后的音频数据写入输出流
+                            let real: Vec<f32> = complex.iter().map(|c| c.re).collect();
+                            let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+                        
+                            // 创建一个 Buffer 音频源
+                            let audio_source: buffer::SamplesBuffer<f32> = buffer::SamplesBuffer::new(2, 48000, real.as_slice());
+                        
+                            // 创建一个 Sink 来控制音频播放
+                            let sink: Sink = Sink::try_new(&stream_handle).unwrap();
+                        
+                            // 将 Buffer 音频源添加到 Sink 中
+                            sink.append(audio_source);
+                            sink.sleep_until_end();
                 },
                 move |err: cpal::StreamError| {
                     // 在这里处理错误
-                    tracing::error!("An error occurred on stream: {}", err);
+                    tracing::error!("An error occurred on stream: {:#?}", err);
                 },
             )
             .unwrap();
-
-        thread::spawn(move || {
-            loop {
-                let processed_data: std::sync::MutexGuard<'_, Vec<Complex<f32>>> =
-                    processed_data_clone.lock().unwrap();
-                // 在这里访问处理后的数据
-                println!("Processed audio data: {:?}", *processed_data);
-
-                // 创建一个新的图表
-                let root = BitMapBackend::new("plot.png", (640, 480)).into_drawing_area();
-                root.fill(&WHITE).unwrap();
-                let mut chart = ChartBuilder::on(&root)
-                    .caption("Frequency Spectrum", ("Arial", 50).into_font())
-                    .margin(5)
-                    .x_label_area_size(30)
-                    .y_label_area_size(30)
-                    .build_ranged(0f32..1f32, 0f32..1f32)
-                    .unwrap();
-
-                // 绘制频率成分图
-                chart.configure_mesh().draw().unwrap();
-                chart
-                    .draw_series(processed_data.iter().enumerate().map(|(i, freq)| {
-                        let x = i as f32 / processed_data.len() as f32;
-                        let y = freq.norm();
-                        Circle::new((x, y), 1, RED.filled())
-                    }))
-                    .unwrap();
-            }
-        });
+        stream.play().unwrap();
+        loop {}
     }
 }
 
 fn main() {
     let _g_logger: clia_tracing_config::WorkerGuard = clia_tracing_config::build()
         .directory("./dft/logs/")
+        .format("full")
         .filter_level("info")
         .with_ansi(true)
         .with_thread_ids(true)
@@ -142,6 +124,8 @@ fn main() {
     tracing::info!("Start DFT-System");
     let device_local: LocalDevice = device();
     tracing::info!("Get the SoundInputDevice --> {:?}", device_local.get_name());
+    tracing::info!("Start to Listen Std-SID");
+    device().dft_and_make_art();
 }
 
 fn get_host() -> Host {
@@ -158,5 +142,5 @@ fn device() -> LocalDevice {
             exit(1);
         }
     };
-    LocalDevice::new(device_raw)
+    LocalDevice::new(device_raw, host)
 }
